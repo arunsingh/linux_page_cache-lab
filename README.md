@@ -23,21 +23,132 @@ Modern Linux kernels (6.1–6.12) power everything from a Raspberry Pi to an NVI
 
 ---
 
-## Quick Start
+## Quick Start — Pick Your Environment
+
+Three ways in, from zero-install to full VM. Choose based on your setup:
+
+---
+
+### Option A — GitHub Codespaces *(no install, works in browser)*
+
+**Best for:** Students on Chromebooks, Windows without admin rights, shared lab machines, or anyone who wants to start in under 2 minutes.
+
+1. Open the repo on GitHub
+2. Click **Code → Codespaces → Create codespace on main**
+3. Wait ~60 s for the container to provision and build all labs
+4. In the terminal:
+
+```bash
+./scripts/run_lab.sh 01     # threads & address spaces
+./scripts/run_lab.sh 27     # demand paging
+./scripts/run_lab.sh 40     # GPU / OS concepts
+```
+
+> Free tier: 60 core-hours/month per GitHub account — more than enough for all 40 labs.
+
+---
+
+### Option B — VS Code Dev Container *(local, no VirtualBox needed)*
+
+**Best for:** Students with VS Code + Docker Desktop already installed. Edit code on the host, run inside Linux instantly.
+
+**Prerequisites:** [VS Code](https://code.visualstudio.com/) + [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) + Docker Desktop
 
 ```bash
 git clone https://github.com/arunsingh/linux_page_cache-lab.git
-cd linux_page_caching
-./scripts/build_all.sh
-./scripts/run_lab.sh          # list available labs
-./scripts/run_lab.sh 8        # paging intro
-./scripts/run_lab.sh 27       # demand paging (interactive — open monitor in 2nd terminal)
+cd linux_page_cache-lab
+code .
+# VS Code prompt: "Reopen in Container" → click it
+# Container builds once, all 40 labs compile automatically
+./scripts/run_lab.sh 01
 ```
 
-For Lab 27, open a second terminal:
+---
+
+### Option C — Docker Compose *(terminal-only, fastest local start)*
+
+**Best for:** Students comfortable with Docker CLI, CI pipelines, or anyone who wants a one-liner sandbox without an IDE.
+
+**Prerequisites:** Docker Desktop or Docker Engine
 
 ```bash
+git clone https://github.com/arunsingh/linux_page_cache-lab.git
+cd linux_page_cache-lab
+make docker          # builds image + starts container (~2 min first time)
+make docker-shell    # opens bash inside the Linux container
+./scripts/run_lab.sh 08    # paging intro
+./scripts/run_lab.sh 27    # demand paging
+```
+
+> ⚠️ Labs requiring raw hardware access (`/proc/iomem`, hardware perf counters, NUMA topology) need `--privileged`. Add `privileged: true` to `docker-compose.yml` if those labs return empty output.
+
+---
+
+### Option D — Vagrant VM *(full Linux kernel, all 40 labs guaranteed)*
+
+**Best for:** Students who want a real Linux kernel (not a container), hardware-level labs (Lab 02 CPUID, Lab 11 huge pages, Lab 04 iomem), or who are studying how VMs themselves work.
+
+**Prerequisites:** [VirtualBox](https://www.virtualbox.org/) + [Vagrant](https://www.vagrantup.com/)
+
+```bash
+git clone https://github.com/arunsingh/linux_page_cache-lab.git
+cd linux_page_cache-lab
+make vm          # vagrant up — provisions Debian 11, installs all tools,
+                 # builds all 40 labs automatically (~5–10 min first run)
+make vm-ssh      # open shell inside VM
+
+# Inside VM:
+cd os-labs
+./scripts/run_lab.sh 01
+./scripts/run_lab.sh 27    # demand paging — open monitor in a second ssh session
+```
+
+Second terminal for live monitoring (Lab 27):
+
+```bash
+make vm-ssh
 ./scripts/monitor.sh <PID>
+```
+
+Push local edits to the VM after changes:
+
+```bash
+make vm-rsync    # syncs host → guest
+```
+
+---
+
+### Environment Comparison
+
+| | Codespaces | Dev Container | Docker | Vagrant VM |
+|---|:---:|:---:|:---:|:---:|
+| Install required | None | VS Code + Docker | Docker | VirtualBox + Vagrant |
+| Setup time | ~1 min | ~2 min | ~2 min | ~10 min |
+| Works offline | ✗ | ✓ | ✓ | ✓ |
+| Real Linux kernel | ✓ (GitHub's) | ✗ (host kernel) | ✗ (host kernel) | ✓ (Debian 11) |
+| All 40 labs work | Most | Most | Most | All |
+| Hardware perf counters | Limited | Limited | `--privileged` | ✓ |
+| `/proc/iomem`, CPUID | Limited | Limited | `--privileged` | ✓ |
+| Edit → run latency | Instant | Instant | Instant (bind mount) | `make vm-rsync` |
+| Cost | Free (60h/mo) | Free | Free | Free |
+
+---
+
+### Makefile — Unified Interface
+
+```bash
+make              # build all 40 labs
+make lab N=01     # run lab 01
+make lab N=27     # demand paging
+make lab N=40     # GPU OS concepts
+make testdata     # generate 128 MB testdata.bin (required for page-cache labs)
+make docker       # start Docker sandbox
+make docker-shell # open shell inside Docker container
+make vm           # vagrant up (first run provisions everything)
+make vm-ssh       # ssh into VM
+make vm-rsync     # push host edits to VM
+make clean        # remove compiled binaries
+make help         # full target list
 ```
 
 ---
@@ -46,13 +157,13 @@ For Lab 27, open a second terminal:
 
 | | Minimum | Recommended |
 |---|---|---|
-| OS | Linux (any distro) | Ubuntu 22.04+ / Debian 12+ |
+| OS | Linux (any distro) or Codespaces | Ubuntu 22.04+ / Debian 12+ |
 | Kernel | 5.15 | 6.1+ (MGLRU, io_uring v3, EEVDF scheduler) |
 | RAM | 4 GB | 8 GB |
 | CPU | 2 cores | 4+ cores |
 | Tools | gcc, bash | gcc, gdb, strace, perf, numactl |
 
-> **macOS note:** Labs 01, 05, 06, 11, 16, 17, 19, 25, 34, 35, 40 use Linux-only APIs (gettid, MAP_HUGETLB, cpu_set_t). All others build and run on macOS for study.
+> **macOS note:** Labs 01, 05, 06, 11, 16, 17, 19, 25, 34, 35, 40 use Linux-only APIs (`gettid`, `MAP_HUGETLB`, `cpu_set_t`). All others build and run on macOS for study. Use Option A/B/C/D above to run the full set.
 
 ---
 
