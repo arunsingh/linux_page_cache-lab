@@ -1,0 +1,40 @@
+# docker-compose.yml — Linux OS Fundamentals Labs
+# Author: Arun Singh | arunsingh.in@gmail.com
+#
+# Usage:
+#   docker compose up -d          # start sandbox in background
+#   docker compose exec lab bash  # open shell inside
+#   docker compose down           # stop & remove container
+#
+# The source directory is bind-mounted, so edits on the host
+# are immediately visible inside the container — no rebuild needed.
+
+services:
+  lab:
+    build: .
+    image: os-labs:latest
+    container_name: os-labs
+
+    stdin_open: true
+    tty: true
+    command: bash --login
+
+    # Required for strace, ptrace-based debugging, and /proc inspection
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp:unconfined
+
+    # Live bind-mount: edit locally, run inside container immediately
+    volumes:
+      - .:/os-labs:cached
+
+    working_dir: /os-labs
+
+    environment:
+      - TERM=xterm-256color
+      - PS1=\[\e[32m\][os-labs]\[\e[0m\] \w \$ 
+
+    # Uncomment to enable perf hardware counters (needs privileged or
+    # a host kernel with perf_event_paranoid=-1)
+    # privileged: true

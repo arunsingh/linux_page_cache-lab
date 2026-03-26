@@ -1,0 +1,51 @@
+{
+  "name": "Linux OS Labs",
+  "image": "debian:bullseye-slim",
+
+  "features": {
+    "ghcr.io/devcontainers/features/common-utils:2": {
+      "installZsh": false,
+      "configureZshAsDefaultShell": false,
+      "installOhMyZsh": false,
+      "upgradePackages": true,
+      "username": "vscode"
+    }
+  },
+
+  "onCreateCommand": "bash .devcontainer/install.sh",
+  "postCreateCommand": "bash scripts/build_all.sh && echo 'All labs built. Run: ./scripts/run_lab.sh 01'",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-vscode.cpptools",
+        "ms-vscode.cpptools-extension-pack",
+        "vadimcn.vscode-lldb",
+        "webfreak.debug",
+        "streetsidesoftware.code-spell-checker"
+      ],
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash",
+        "C_Cpp.default.compilerPath": "/usr/bin/gcc",
+        "C_Cpp.default.cStandard": "c11",
+        "C_Cpp.default.intelliSenseMode": "linux-gcc-x64"
+      }
+    },
+    "codespaces": {
+      "openFiles": ["README.md"]
+    }
+  },
+
+  "remoteUser": "vscode",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/os-labs,type=bind",
+  "workspaceFolder": "/workspaces/os-labs",
+
+  "mounts": [],
+
+  "runArgs": [
+    "--cap-add=SYS_PTRACE",
+    "--security-opt", "seccomp=unconfined"
+  ],
+
+  "forwardPorts": []
+}

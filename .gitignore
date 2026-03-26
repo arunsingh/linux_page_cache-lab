@@ -22,3 +22,9 @@ testdata.bin
 *.tar.gz
 *.tar
 *.zip
+
+# Vagrant
+.vagrant/
+
+# Docker
+.docker-data/
