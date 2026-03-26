@@ -88,16 +88,144 @@ static void demo_smaps(void) {
     printf("\n  smaps shows per-VMA: Size, Rss, Pss, Referenced, Anonymous, etc.\n");
 }
 
+/* WHY: madvise(MADV_DONTNEED) tells the kernel it may reclaim the backing pages
+ *      for a range of anonymous memory.  The virtual mapping stays intact but the
+ *      PTEs are cleared (Present=0).  RSS drops immediately; the next access
+ *      triggers a fresh minor fault and the page is zero-filled again.
+ *      This is how jemalloc and tcmalloc return memory to the OS without munmap().
+ *
+ * WHY: userfaultfd (Linux 4.3+) lets a userspace thread handle page faults for a
+ *      nominated address range.  UFFD_FEATURE_PAGEFAULT_FLAG_WP enables write-
+ *      protection faults.  Live migration tools (QEMU, CRIU) use this to copy
+ *      dirty pages while the process keeps running — no kernel changes needed.
+ */
+
+static void demo_madvise_dontneed(void) {
+    print_section("Phase 4: madvise(MADV_DONTNEED) — Returning Pages to Kernel");
+
+    size_t sz = 8 * 1024 * 1024; /* 8 MiB */
+    void *p = mmap(NULL, sz, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) { perror("mmap"); return; }
+
+    /* OBSERVE: After memset the pages are present (Dirty=1, Present=1 in PTEs).
+     *          RSS will show ~8 MiB in /proc/self/smaps for this region. */
+    memset(p, 0xAB, sz);
+
+    /* Read RSS before MADV_DONTNEED */
+    long rss_before = 0;
+    {
+        FILE *fp = fopen("/proc/self/status", "r");
+        char line[256];
+        if (fp) {
+            while (fgets(line, sizeof(line), fp)) {
+                if (strncmp(line, "VmRSS:", 6) == 0) {
+                    sscanf(line + 6, "%ld", &rss_before);
+                    break;
+                }
+            }
+            fclose(fp);
+        }
+    }
+    printf("  RSS before MADV_DONTNEED: %ld kB\n", rss_before);
+
+    /* WHY: MADV_DONTNEED clears PTEs for the range.  The kernel can immediately
+     *      reclaim those physical frames (add them back to the free list).
+     *      The VMA itself is not removed — the address range remains valid. */
+    if (madvise(p, sz, MADV_DONTNEED) != 0) {
+        perror("madvise");
+    }
+
+    /* Read RSS after MADV_DONTNEED */
+    long rss_after = 0;
+    {
+        FILE *fp = fopen("/proc/self/status", "r");
+        char line[256];
+        if (fp) {
+            while (fgets(line, sizeof(line), fp)) {
+                if (strncmp(line, "VmRSS:", 6) == 0) {
+                    sscanf(line + 6, "%ld", &rss_after);
+                    break;
+                }
+            }
+            fclose(fp);
+        }
+    }
+    printf("  RSS after  MADV_DONTNEED: %ld kB  (dropped ~%ld kB)\n",
+           rss_after, rss_before - rss_after);
+
+    /* OBSERVE: Re-touching the range causes fresh minor faults (zero pages). */
+    long min0, maj0, min1, maj1;
+    struct rusage ru;
+    getrusage(RUSAGE_SELF, &ru); min0 = ru.ru_minflt; maj0 = ru.ru_majflt;
+    volatile char *q = (volatile char *)p;
+    for (size_t i = 0; i < sz; i += (size_t)sysconf(_SC_PAGESIZE)) q[i] = 0;
+    getrusage(RUSAGE_SELF, &ru); min1 = ru.ru_minflt; maj1 = ru.ru_majflt;
+    printf("  Re-touch after DONTNEED: minor_faults=%ld  major_faults=%ld\n",
+           min1-min0, maj1-maj0);
+    printf("  (Pages are zero-filled again — content lost after DONTNEED)\n");
+
+    munmap(p, sz);
+}
+
 int main(void) {
+    /* EXPECTED OUTPUT (Linux x86_64):
+     *   === Lab 09: Paging (Deep Dive) ===
+     *   --- Phase 1: PTE flags listed (educational, no live output) ---
+     *   After mmap(16MiB):    minor_faults=0 or very small (no pages touched yet)
+     *   After memset(16MiB):  minor_faults=~4096  (16MiB / 4096B per page)
+     *   After 2nd memset:     minor_faults=0  (pages already present, no fault)
+     *   --- Phase 3: smaps entry for 4 MiB anonymous region ---
+     *   Size: 4096 kB, Rss: 4096 kB, Pss: 4096 kB, Anonymous: 4096 kB
+     *   --- Phase 4: MADV_DONTNEED ---
+     *   RSS before: ~<some value>+8192 kB; RSS after: drops ~8192 kB
+     *   Re-touch faults: ~2048 minor faults (8MiB / 4096B)
+     */
     printf("=== Lab 09: Paging (Deep Dive) ===\n");
     demo_pte_flags();
     demo_fault_counting();
     demo_smaps();
+    demo_madvise_dontneed();
+
+    /* === EXERCISE ===
+     * Try these hands-on tasks:
+     * 1. After mmap() but BEFORE any memset, read /proc/self/smaps for that region.
+     *    Check "Rss:" — it should be 0 (no page faults yet).  Then touch one byte
+     *    per page (loop with stride 4096) and re-read smaps.  Watch Rss grow one
+     *    page at a time.  This demonstrates pure demand paging.
+     * 2. Use mmap(MAP_SHARED | MAP_ANONYMOUS) for a 4 MiB region, fork(), and have
+     *    the child write to it.  In the parent, read the written values.  Contrast
+     *    with MAP_PRIVATE to see COW vs truly shared memory.  Check smaps Shared_Dirty
+     *    vs Private_Dirty fields to confirm.
+     * 3. Modern (userfaultfd for live migration): open /dev/userfaultfd (or use
+     *    syscall(__NR_userfaultfd)), register a PROT_NONE region, and in a separate
+     *    thread handle UFFD_EVENT_PAGEFAULT by calling UFFDIO_COPY to supply pages.
+     *    This mirrors how QEMU implements post-copy live migration and CRIU implements
+     *    lazy restore in Linux 6.x.
+     *
+     * OBSERVE: After MADV_DONTNEED, the content is GONE — next read returns zeros.
+     *          After MADV_FREE (Linux 4.5+) the content MAY survive if the kernel
+     *          has not reclaimed the page yet (lazy free).
+     * WHY:     DONTNEED is the mechanism jemalloc uses for madvise-based purging.
+     *          Every call to free() that releases a large chunk eventually calls
+     *          madvise(MADV_DONTNEED) so that RSS tracks actual usage.
+     */
+    printf("\n========== Hands-On Exercise ==========\n");
+    printf("1. Read /proc/self/smaps before and after touching mmap'd pages;\n");
+    printf("   watch Rss grow page-by-page demonstrating demand paging.\n");
+    printf("2. Compare MAP_PRIVATE vs MAP_SHARED after fork(); check smaps\n");
+    printf("   Shared_Dirty vs Private_Dirty to confirm COW behavior.\n");
+    printf("3. Modern: implement a userfaultfd handler (UFFDIO_COPY) that supplies\n");
+    printf("   pages on demand, simulating QEMU post-copy live migration.\n");
+
     printf("\n========== Quiz ==========\n");
     printf("Q1. What PTE flag change implements Copy-on-Write?\n");
     printf("Q2. Why does the second memset cause near-zero faults?\n");
     printf("Q3. What is the 'Dirty' bit used for by the kernel?\n");
     printf("Q4. What is PSS (Proportional Set Size) and why is it more useful than RSS for shared libs?\n");
     printf("Q5. How does NX bit prevent buffer overflow exploits?\n");
+    printf("Q6. What is the difference between MADV_DONTNEED and MADV_FREE?\n");
+    printf("    Which one does jemalloc prefer and why?\n");
+    printf("Q7. How does userfaultfd differ from SIGSEGV-based page fault handling,\n");
+    printf("    and why is it preferred for live migration in modern kernels (6.x)?\n");
     return 0;
 }

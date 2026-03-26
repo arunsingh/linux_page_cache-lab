@@ -201,13 +201,108 @@ static void demo_memory_info(void) {
     printf("         HugePages reduce TLB pressure for large memory workloads.\n");
 }
 
+/* WHY: /proc/iomem shows the physical address space layout assigned by BIOS/UEFI/ACPI.
+ *      Memory-Mapped I/O (MMIO) regions for PCIe devices appear here (e.g., NVMe BAR,
+ *      GPU framebuffer).  The kernel maps these regions with ioremap() (non-cached)
+ *      so that device register reads/writes are not buffered by the CPU cache.
+ *      Port I/O (PIO) is the older x86 I/O space accessed via in/out instructions;
+ *      modern devices use MMIO because it is faster and architecture-independent.
+ *
+ * WHY: PCIe Gen5 (32 GT/s per lane, ~64 GB/s x16) is standard in 2024 GPU servers.
+ *      NVMe SSDs use PCIe Gen4/5 directly -- no SATA/SAS controller overhead.
+ *      NVIDIA H100 GPUs use PCIe Gen5 x16 or NVLink 4.0 (900 GB/s bidirectional).
+ *      The OS sees the GPU as a PCIe endpoint; its BAR regions appear in /proc/iomem.
+ */
+
+static void demo_iomem(void) {
+    print_section("Phase 5: Physical Address Space (/proc/iomem)");
+    printf("  /proc/iomem shows BIOS/ACPI-assigned physical address regions:\n\n");
+
+    /* OBSERVE: Entries without indentation are top-level regions.
+     *          Indented entries are sub-regions of the parent (e.g., PCIe BARs).
+     *          'System RAM' entries are usable DRAM; others are device MMIO or reserved. */
+    FILE *fp = fopen("/proc/iomem", "r");
+    if (!fp) { perror("fopen /proc/iomem"); return; }
+    char line[256];
+    int count = 0;
+    while (fgets(line, sizeof(line), fp) && count < 30) {
+        printf("  %s", line);
+        count++;
+    }
+    if (count >= 30) printf("  ... (truncated; see /proc/iomem for full listing)\n");
+    fclose(fp);
+
+    printf("\n  OBSERVE: Non-'System RAM' entries are MMIO regions for devices.\n");
+    printf("           GPU BAR0/BAR1 (framebuffer + registers) appear here too.\n");
+    printf("           PIO: separate 64 KiB I/O port address space (x86 in/out instructions).\n");
+    printf("           MMIO: PCIe BARs mapped into physical address space -- faster than PIO.\n");
+}
+
+static void demo_cpuinfo_iomem(void) {
+    print_section("Phase 6: /proc/cpuinfo Key Fields");
+    FILE *fp = fopen("/proc/cpuinfo", "r");
+    if (!fp) { perror("fopen /proc/cpuinfo"); return; }
+    char line[512];
+    int count = 0;
+    /* Print first processor block (up to first blank line) */
+    while (fgets(line, sizeof(line), fp)) {
+        if (line[0] == '\n') { count++; if (count >= 2) break; }
+        if (strncmp(line,"processor",9)==0 || strncmp(line,"model name",10)==0 ||
+            strncmp(line,"cpu MHz",7)==0 || strncmp(line,"cache size",10)==0 ||
+            strncmp(line,"physical id",11)==0 || strncmp(line,"flags",5)==0 ||
+            strncmp(line,"bugs",4)==0)
+            printf("  %s", line);
+    }
+    fclose(fp);
+    printf("  OBSERVE: 'flags' lists CPU features (avx512, rdrand, hypervisor, etc.)\n");
+    printf("           'bugs' lists CPU vulnerabilities requiring SW mitigations\n");
+    printf("           (meltdown, spectre_v2, mmio_stale_data, etc.)\n");
+}
+
 int main(void) {
+    /* EXPECTED OUTPUT (Linux x86_64):
+     *   CPU Vendor: GenuineIntel or AuthenticAMD
+     *   CPU Brand:  Intel Core i9-... or AMD EPYC ...
+     *   AVX-512F: YES (on Xeon/EPYC server), NO (on consumer laptop)
+     *   Running in VM: YES (if in cloud/Docker), NO (bare metal)
+     *   L1 Data 32K, L1 Instruction 32K, L2 256K-1M, L3 varies by SKU
+     *   NUMA: 1 node (laptop), 2+ nodes (dual-socket server)
+     *   /proc/iomem: shows System RAM + MMIO regions for devices
+     */
     printf("=== Lab 02: PC Architecture ===\n");
 
     demo_cpuid();
     demo_cache_hierarchy();
     demo_topology();
     demo_memory_info();
+    demo_iomem();
+    demo_cpuinfo_iomem();
+
+    /* === EXERCISE ===
+     * Try these hands-on tasks:
+     * 1. Parse /proc/cpuinfo and extract the model name, number of cores, and
+     *    the flags field.  Count how many processors (logical CPUs) are listed.
+     *    Compare the count against sysconf(_SC_NPROCESSORS_ONLN).
+     * 2. Parse /proc/iomem and count how many regions are labeled 'System RAM'
+     *    vs MMIO.  Sum the System RAM sizes to compute total physical RAM.
+     *    Compare against MemTotal in /proc/meminfo.
+     * 3. Modern (NVMe + PCIe Gen5 in GPU servers): identify NVMe or GPU BAR entries
+     *    in /proc/iomem (look for PCI lines).  On a server with an H100 GPU, the
+     *    GPU framebuffer BAR is typically 80 GiB at a high physical address.
+     *    Explain why ACPI must report this BAR so the kernel can ioremap() it.
+     *
+     * OBSERVE: MMIO BAR regions in /proc/iomem have no 'System RAM' label.
+     *          The kernel accesses them via ioremap() with cache-disable attributes
+     *          (PAT: Write-Combining for framebuffers, Uncached for control regs).
+     * WHY:     MMIO must bypass CPU caches because the device sees writes only when
+     *          they reach the PCIe bus.  Write-Combining (WC) batches writes to the
+     *          GPU framebuffer for higher throughput without full uncached overhead.
+     */
+    printf("\n========== Hands-On Exercise ==========\n");
+    printf("1. Parse /proc/cpuinfo: count logical CPUs, extract model name and flags.\n");
+    printf("2. Parse /proc/iomem: sum 'System RAM' regions and compare to /proc/meminfo MemTotal.\n");
+    printf("3. Modern (NVMe/GPU servers): find PCIe BAR entries in /proc/iomem;\n");
+    printf("   explain why GPU framebuffer BAR uses Write-Combining (WC) PAT attribute.\n");
 
     printf("\n========== Quiz ==========\n");
     printf("Q1. What does the CPUID instruction tell you? Why is it useful for performance tuning?\n");
@@ -215,5 +310,9 @@ int main(void) {
     printf("Q3. What is NUMA and why does it matter for GPU data centre workloads?\n");
     printf("Q4. How does hyperthreading appear in the topology? Do HT siblings share L1?\n");
     printf("Q5. Why would a GPU cluster architect care about cache line size?\n");
+    printf("Q6. What is the difference between MMIO and Port I/O (PIO)?  Which does\n");
+    printf("    modern PCIe use and why is it faster on current x86 platforms?\n");
+    printf("Q7. In a GPU server with PCIe Gen5 x16, what is the theoretical peak\n");
+    printf("    bandwidth for a host-to-GPU memcpy, and how does NVLink compare?\n");
     return 0;
 }

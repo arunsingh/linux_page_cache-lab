@@ -158,7 +158,86 @@ static void demo_fs_devices(void) {
     printf("         Major number identifies the driver, minor identifies the instance.\n");
 }
 
+/* WHY: Thread-Local Storage (TLS) is a per-thread segment (%fs on x86_64) that holds
+ *      errno, thread ID, and user-defined __thread variables.  Each thread's %fs base
+ *      register is set by the kernel via arch_prctl(ARCH_SET_FS) during clone().
+ *      In Linux 6.x this is surfaced as a distinct VMA with [anon] tag in /proc/maps.
+ *
+ * WHY: cgroups v2 (unified hierarchy, default since kernel 5.x) lets containers
+ *      enforce memory.max, memory.swap.max per-group.  The kernel's memory controller
+ *      tracks RSS+swap per cgroup; OOM killer is cgroup-scoped in v2.
+ *      Docker and Kubernetes both use cgroups v2 for resource accounting.
+ */
+
+/* --- Phase 5: Count and classify /proc/self/maps regions --- */
+
+/* OBSERVE: Each distinct pathname (or anonymous) in /proc/self/maps is a VMA.
+ *          Counting them reveals the minimum address space "footprint" a thread has. */
+static void demo_count_vma_regions(void) {
+    print_section("Phase 5: Count Unique Address Space Regions");
+
+    FILE *fp = fopen("/proc/self/maps", "r");
+    if (!fp) { perror("fopen /proc/self/maps"); return; }
+
+    int total = 0, anon = 0, file_backed = 0, special = 0;
+    int has_vdso = 0, has_vvar = 0, has_heap = 0, has_stack = 0;
+    char line[512];
+    while (fgets(line, sizeof(line), fp)) {
+        total++;
+        if (strstr(line, "[vdso]"))       { has_vdso  = 1; special++; }
+        else if (strstr(line, "[vvar]"))  { has_vvar  = 1; special++; }
+        else if (strstr(line, "[heap]"))  { has_heap  = 1; special++; }
+        else if (strstr(line, "[stack]")) { has_stack = 1; special++; }
+        else if (strstr(line, "/"))       file_backed++;
+        else                              anon++;
+    }
+    fclose(fp);
+
+    printf("  Total VMAs     : %d\n", total);
+    printf("  File-backed    : %d  (executable, shared libs, mmap'd files)\n", file_backed);
+    printf("  Anonymous      : %d  (heap, thread stacks, mmap(MAP_ANON))\n", anon);
+    printf("  Special kernel : %d  (vdso=%d, vvar=%d, heap=%d, stack=%d)\n",
+           special, has_vdso, has_vvar, has_heap, has_stack);
+
+    /* WHY: [vdso] is a kernel-exported shared library mapped into every process.
+     *      It implements clock_gettime(), gettimeofday(), and getcpu() without a
+     *      full syscall — the kernel updates a shared page the process reads directly.
+     *      [vvar] is the read-only data page the vdso code reads (TSC offset, etc.). */
+    printf("\n  WHY vdso: kernel maps ~4 KiB of code into every process so that\n");
+    printf("            clock_gettime() never crosses the user/kernel boundary.\n");
+    printf("            This cuts latency from ~100 ns (syscall) to ~5 ns (vdso).\n");
+
+    /* WHY: cgroups v2 memory.max limits the total memory (anon + file) a cgroup can use.
+     *      When a container hits memory.max, the kernel invokes the cgroup-local OOM
+     *      killer rather than killing processes system-wide. */
+    char cg_mem[128] = "/sys/fs/cgroup/memory.max";
+    fp = fopen(cg_mem, "r");
+    if (fp) {
+        char val[64] = {0};
+        if (fgets(val, sizeof(val), fp)) {
+            val[strcspn(val, "\n")] = '\0';
+            printf("\n  cgroups v2 memory.max for this process: %s\n", val);
+            printf("  (\"max\" means unlimited; containers set a numeric byte limit)\n");
+        }
+        fclose(fp);
+    }
+}
+
 int main(void) {
+    /* EXPECTED OUTPUT (Linux x86_64):
+     *   === Lab 01: Threads, Address Spaces, Filesystem Devices ===
+     *   PID: 12345
+     *   === Phase 1: Threads Share Address Space ===
+     *   Main: PID=12345, TID=12345
+     *   Main: &shared_global=0x... (same address seen by all 3 threads)
+     *   Thread 0/1/2: same &shared_global address, different TIDs
+     *   After all threads: global=45, heap_var=130   (42+3 and 100+3*10)
+     *   === Phase 2: Processes Have Isolated Address Spaces ===
+     *   Child modifies test_var to 999; Parent still sees 500  (COW)
+     *   === Phase 5: Count Unique Address Space Regions ===
+     *   Total VMAs: 20-40 (more with ASLR + many libs loaded)
+     *   File-backed: ~10-25, Anonymous: ~5-10, Special kernel: 4
+     */
     printf("=== Lab 01: Threads, Address Spaces, Filesystem Devices ===\n");
     printf("PID: %d\n", getpid());
 
@@ -166,6 +245,34 @@ int main(void) {
     demo_process_isolation();
     demo_address_space_map();
     demo_fs_devices();
+    demo_count_vma_regions();
+
+    /* === EXERCISE ===
+     * Try these hands-on tasks:
+     * 1. Read /proc/self/maps in a loop BEFORE and AFTER calling malloc(1<<20).
+     *    Run: grep '\[heap\]' /proc/<PID>/maps both times and note how the heap
+     *    end address changes.  This shows sbrk()/brk() in action.
+     * 2. Create a new thread and inside the thread function open /proc/self/maps
+     *    and grep for lines that do NOT appear in the main thread's maps snapshot.
+     *    The new entries are the thread's TLS block and stack VMA.
+     *    Measure: does TLS appear as file-backed or anonymous?
+     * 3. Modern (cgroups v2 + namespaces): run this binary inside a Docker container
+     *    with --memory=64m and check /sys/fs/cgroup/memory.max from inside the
+     *    container.  Then malloc() more than 64 MiB and observe the OOM kill message.
+     *    Compare: without --memory limit the same allocation succeeds silently.
+     *
+     * OBSERVE: Thread stacks show as anonymous VMAs with rw-p permissions and no
+     *          pathname.  Their size is typically 8 MiB (ulimit -s default) but the
+     *          kernel only faults in pages actually touched (guard page at bottom).
+     * WHY:     The kernel creates a separate VMA for each thread stack and TLS block
+     *          during clone(CLONE_VM|CLONE_THREAD).  This is why the VMA count grows
+     *          by ~2-3 for every additional thread you create.
+     */
+    printf("\n========== Hands-On Exercise ==========\n");
+    printf("1. Read /proc/self/maps before and after malloc(1<<20); observe [heap] growth.\n");
+    printf("2. In a new thread, open /proc/self/maps and find the thread stack VMA.\n");
+    printf("3. Modern: run in Docker --memory=64m, read /sys/fs/cgroup/memory.max,\n");
+    printf("   then malloc >64 MiB and observe cgroup-scoped OOM kill.\n");
 
     printf("\n========== Quiz ==========\n");
     printf("Q1. Do threads in the same process share the same virtual address space? How did you verify?\n");
@@ -173,5 +280,9 @@ int main(void) {
     printf("Q3. What is the difference between a character device and a block device?\n");
     printf("Q4. What does the [vdso] mapping represent and why does the kernel provide it?\n");
     printf("Q5. If two threads read the same global variable, do they access the same physical memory? Why?\n");
+    printf("Q6. What is Thread-Local Storage (TLS) and how does the kernel set it up on x86_64\n");
+    printf("    (hint: %%fs segment register and arch_prctl)?\n");
+    printf("Q7. In cgroups v2, how does memory.max differ from the older cgroups v1\n");
+    printf("    memory.limit_in_bytes, and why does Kubernetes prefer cgroups v2?\n");
     return 0;
 }

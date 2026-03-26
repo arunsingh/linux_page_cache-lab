@@ -67,15 +67,91 @@ static void demo_voluntary_stats(void){
     printf("  voluntary = process yielded CPU (I/O, sleep, mutex)\n");
     printf("  nonvoluntary = preempted by scheduler (time slice expired)\n");
 }
+/* WHY: getpid() is implemented via vdso on modern Linux (5.x+).  The kernel
+ *      caches the PID in the vdso data page so the C library can return it without
+ *      issuing a syscall at all.  getpid() takes ~1-5 ns; a real syscall takes ~100 ns.
+ *      This is why high-frequency code (e.g., logging libraries) calls getpid() freely.
+ *
+ * WHY: On x86_64, a full syscall involves: SYSCALL instruction, kernel entry trampoline,
+ *      CR3 switch (if KPTI enabled, for Meltdown mitigation), register save, handler,
+ *      register restore, CR3 switch back, SYSRET.  Each CR3 switch flushes TLB entries
+ *      not tagged with the PCID, adding ~100-200 cycles on top of the syscall itself.
+ */
+
+static void demo_getpid_latency(void) {
+    print_section("Phase 4: getpid() Syscall Latency (vdso vs raw)");
+    int N = 1000000;
+
+    /* Measure getpid() — likely served from vdso, no kernel crossing */
+    double t0 = now_ns();
+    volatile pid_t dummy = 0;
+    for (int i = 0; i < N; i++) dummy = getpid();
+    double elapsed_vdso = now_ns() - t0;
+    printf("  getpid() x%d: %.0f ns total, ~%.2f ns/call\n",
+           N, elapsed_vdso, elapsed_vdso / N);
+    printf("  (If ~1-5 ns/call: served by vdso without kernel crossing)\n");
+    printf("  (If ~100-300 ns/call: full syscall path, KPTI TLB cost visible)\n");
+
+    /* OBSERVE: On kernels with KPTI (most x86 post-2018), even vdso-bypassed calls
+     *          that do reach the kernel pay a CR3 switch penalty (~100-200 cycles). */
+    printf("\n  Check if KPTI is active: grep 'cpu_bugs' /proc/cpuinfo | grep meltdown\n");
+    printf("  With KPTI: each real syscall costs ~200 ns extra vs non-KPTI kernel.\n");
+    (void)dummy;
+}
+
 int main(void){
+    /* EXPECTED OUTPUT (Linux x86_64):
+     *   === Lab 15: Process Structure, Context Switching ===
+     *   Phase 1: 100000 pipe round-trips, per ctx switch ~2-10 us (process)
+     *   Phase 2: thread switch typically 30-60% faster than process switch
+     *   Phase 3: voluntary_ctxt_switches: small number (we did I/O wait via pipe)
+     *            nonvoluntary_ctxt_switches: near 0 (short-lived, no preemption)
+     *   Phase 4: getpid() ~1-5 ns/call if vdso active, ~100-300 ns if syscall path
+     */
     printf("=== Lab 15: Process Structure, Context Switching ===\n");
     demo_ctx_switch_cost();
     demo_thread_switch();
     demo_voluntary_stats();
+    demo_getpid_latency();
+
+    /* === EXERCISE ===
+     * Try these hands-on tasks:
+     * 1. Run this binary with 'perf stat -e context-switches ./lab_15' (Linux with
+     *    perf installed).  Compare the hw counter to the pipe-based estimate.
+     *    Then repeat inside a Docker container: does perf still work?
+     *    (Hint: perf in containers needs --cap-add SYS_ADMIN or seccomp adjustment.)
+     * 2. Measure getpid() latency on a KPTI kernel vs a patched/mitigated one:
+     *    cat /sys/devices/system/cpu/vulnerabilities/meltdown
+     *    If it says "Mitigation: PTI" you're paying the CR3 switch cost on every syscall.
+     * 3. Modern (VDSO eliminates syscall overhead): write a tight loop calling
+     *    clock_gettime(CLOCK_REALTIME) and clock_gettime(CLOCK_TAI) — both go via vdso.
+     *    Then strace ./lab_15 2>&1 | grep clock_gettime and observe: no syscall entries!
+     *    This is the vdso optimization that makes high-frequency timestamping free.
+     *
+     * OBSERVE: Thread context switches are faster because they share the same mm_struct
+     *          (page tables).  No CR3 register change = no TLB flush = faster resume.
+     *          Process switches must reload CR3, invalidating TLB entries (unless PCID).
+     * WHY:     Modern CPUs use PCID (Process Context ID) to tag TLB entries per-process,
+     *          avoiding full TLB flushes on context switch.  Linux has supported PCID
+     *          since 4.14.  With PCID, process switch cost drops significantly.
+     */
+    printf("\n========== Hands-On Exercise ==========\n");
+    printf("1. Use 'perf stat -e context-switches ./lab_15' to count hardware context switches.\n");
+    printf("2. Check /sys/devices/system/cpu/vulnerabilities/meltdown for KPTI status;\n");
+    printf("   measure getpid() latency and correlate with PTI mitigation overhead.\n");
+    printf("3. Modern (vdso): strace this binary and observe clock_gettime() does NOT\n");
+    printf("   appear in strace output -- it is served entirely from vdso.\n");
+
     printf("\n========== Quiz ==========\n");
     printf("Q1. What state must the kernel save/restore during a context switch?\n");
     printf("Q2. Why are thread context switches cheaper than process switches?\n");
     printf("Q3. What is a voluntary vs nonvoluntary context switch?\n");
     printf("Q4. How does context switch cost affect GPU DC performance (hint: NCCL, latency)?\n");
+    printf("Q5. What is the vdso and which syscalls does it accelerate on Linux x86_64?\n");
+    printf("Q6. How does PCID (Process Context ID) reduce the TLB flush cost of\n");
+    printf("    context switches, and which Linux version introduced PCID support?\n");
+    printf("Q7. With KPTI enabled (Meltdown mitigation), why does every syscall cost\n");
+    printf("    an extra ~100-200 cycles, and how does Linux mitigate this overhead\n");
+    printf("    (hint: PCID + flush-on-return optimization)?\n");
     return 0;
 }

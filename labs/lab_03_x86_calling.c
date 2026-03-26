@@ -152,13 +152,102 @@ static void demo_volatile_effect(void) {
     printf("  Compile with -O2 and check assembly: gcc -O2 -S lab_03_x86_calling.c\n");
 }
 
+/* WHY: The red zone is a 128-byte area BELOW the current rsp on x86_64.
+ *      The ABI guarantees that asynchronous events (signals, interrupts) will NOT
+ *      clobber it.  Leaf functions (those that make no further calls) can use it
+ *      for locals without adjusting rsp -- saving the sub/add pair in the prologue.
+ *      The Linux kernel does NOT use the red zone because interrupts use the same
+ *      rsp and would overwrite it.  Kernel code is compiled with -mno-red-zone.
+ *
+ * WHY: ARM64 ABI (AAPCS64) differs from x86_64 SysV in key ways:
+ *      - Integer args: x0-x7 (8 regs vs x86_64's 6)
+ *      - Return: x0 (or x0+x1 for 128-bit)
+ *      - Frame pointer: x29 (mandatory for unwinding in most OS builds)
+ *      - No red zone: sp must always be 16-byte aligned (strict alignment fault)
+ *      - Link register: x30 holds return address (not pushed to stack by CALL)
+ *      Apple Silicon (M1/M2/M3) and AWS Graviton use AAPCS64.
+ */
+
+/* OBSERVE: This function is ideal for disassembly with objdump.
+ *          It uses the first two arg registers (rdi, rsi on x86_64; x0, x1 on ARM64)
+ *          and returns via rax / x0 respectively. */
+__attribute__((noinline))
+static long add_two(long a, long b) {
+    return a + b;
+}
+
+static void demo_disassembly_hint(void) {
+    print_section("Phase 5: Disassembly Verification Exercise");
+
+    long result = add_two(17, 25);
+    printf("  add_two(17, 25) = %ld\n", result);
+    printf("  Function pointer: %p\n", (void *)(uintptr_t)add_two);
+
+    printf("\n  x86_64 objdump command:\n");
+    printf("    objdump -d lab_03 | awk '/^[0-9a-f]+ <add_two>/,/^$/' | head -20\n");
+    printf("  Expected: movq %%rdi, %%rax; addq %%rsi, %%rax; retq\n");
+    printf("            (Compiler puts 'a' in rdi, 'b' in rsi, result in rax)\n\n");
+
+    printf("  ARM64 objdump command (cross-compiled or on Apple Silicon):\n");
+    printf("    objdump -d lab_03 | awk '/^[0-9a-f]+ <add_two>/,/^$/' | head -20\n");
+    printf("  Expected: add x0, x0, x1; ret\n");
+    printf("            (ARM64: x0=a, x1=b, result in x0, return via lr/x30)\n\n");
+
+    /* OBSERVE: At -O0, the compiler stores args to the stack first.
+     *          At -O2, the function is typically 2-3 instructions.
+     *          The ABI is visible even at -O0 in the prologue register saves. */
+    printf("  OBSERVE: Compile with -O0 to see full frame, -O2 to see ABI-only form.\n");
+    printf("  WHY: The ABI defines which registers are caller-saved (must be preserved\n");
+    printf("       by caller) vs callee-saved (must be preserved by callee):\n");
+    printf("    x86_64 callee-saved: rbx, rbp, r12-r15\n");
+    printf("    ARM64  callee-saved: x19-x28, x29 (fp), x30 (lr)\n");
+}
+
 int main(void) {
+    /* EXPECTED OUTPUT (Linux x86_64):
+     *   Phase 1: a(rdi)=1 b(rsi)=2 c(rdx)=3 d(rcx)=4 e(r8)=5 f(r9)=6
+     *            g(stack)=7 h(stack)=8  Return value (rax)=36
+     *   Phase 2: 4 stack frames, each with lower rsp than parent (stack grows down)
+     *            frame_size typically 16-48 bytes (alignment + locals)
+     *   Phase 3: TSC value (large uint64), RDTSC back-to-back overhead ~20-40 cycles
+     *   Phase 4: without/with volatile both return 499500 (sum 0..999)
+     *   Phase 5: add_two(17,25)=42; disassembly tip printed
+     */
     printf("=== Lab 03: x86 Instruction Set, GCC Calling Conventions ===\n");
 
     demo_calling_convention();
     demo_stack_layout();
     demo_inline_asm();
     demo_volatile_effect();
+    demo_disassembly_hint();
+
+    /* === EXERCISE ===
+     * Try these hands-on tasks:
+     * 1. Compile this file and disassemble add_two() with both -O0 and -O2:
+     *      gcc -O0 -Wall -o lab_03_O0 lab_03_x86_calling.c
+     *      gcc -O2 -Wall -o lab_03_O2 lab_03_x86_calling.c
+     *      objdump -d lab_03_O0 | awk '/add_two/,/^$/' | head -20
+     *    Count the instructions: -O2 should produce 2-3 instructions vs ~15 for -O0.
+     * 2. Add a function with 7 integer arguments and disassemble it.
+     *    Find where the 7th argument is loaded in the caller (hint: look for push or
+     *    movq to (%rsp) just before the call instruction).  Verify it is on the stack.
+     * 3. Modern (ARM64 ABI differences): if you have access to an Apple Silicon Mac
+     *    or AWS Graviton, cross-compile with 'aarch64-linux-gnu-gcc' and disassemble.
+     *    Compare: x86_64 uses 6 arg regs (rdi,rsi,...,r9); ARM64 uses 8 (x0-x7).
+     *    Also verify: ARM64 has NO red zone -- sp must be 16-byte aligned at all times.
+     *
+     * OBSERVE: At -O2, add_two() becomes 2 instructions: add + ret on x86_64.
+     *          At -O0, there is a full prologue (push rbp; mov rsp,rbp) and
+     *          epilogue (pop rbp; ret) even for a trivial function.
+     * WHY:     The red zone means leaf functions at -O2 can skip the sub rsp, N
+     *          stack allocation step, using the 128-byte zone below rsp for spills.
+     *          This is why kernel code uses -mno-red-zone: IRQ handlers would corrupt it.
+     */
+    printf("\n========== Hands-On Exercise ==========\n");
+    printf("1. Compile at -O0 and -O2; disassemble add_two() and count instructions.\n");
+    printf("2. Write a 7-arg function; find the 7th arg loaded to stack in the caller.\n");
+    printf("3. Modern (ARM64): cross-compile and compare x0-x7 register args vs\n");
+    printf("   x86_64 rdi-r9; verify ARM64 has no red zone (sp must stay 16B aligned).\n");
 
     printf("\n========== Quiz ==========\n");
     printf("Q1. How many integer arguments fit in registers on x86_64? Where do the rest go?\n");
@@ -166,5 +255,9 @@ int main(void) {
     printf("Q3. What is the 'red zone' on x86_64 and why does the kernel not use it?\n");
     printf("Q4. Why must device driver code use volatile for MMIO accesses?\n");
     printf("Q5. What does RDTSC measure and why is it useful for micro-benchmarking?\n");
+    printf("Q6. How does the ARM64 (AAPCS64) calling convention differ from x86_64 SysV ABI\n");
+    printf("    in terms of: number of arg regs, return register, frame pointer, red zone?\n");
+    printf("Q7. What are callee-saved vs caller-saved registers, and why does the distinction\n");
+    printf("    matter when writing an interrupt handler or signal handler in assembly?\n");
     return 0;
 }

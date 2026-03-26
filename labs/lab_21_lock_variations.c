@@ -53,9 +53,92 @@ int main(void){
     pthread_mutex_lock(&rm);
     printf("  Recursive mutex: locked twice without deadlock.\n");
     pthread_mutex_unlock(&rm);pthread_mutex_unlock(&rm);
+    /* WHY: seqlock (sequence lock) in kernel timekeeping:
+     *      A seqlock allows concurrent readers without blocking writers.
+     *      The writer increments a sequence counter (odd=updating, even=stable).
+     *      Readers check the counter before and after reading the data.
+     *      If the counter changed (or is odd), the reader retries.
+     *      This is used for jiffies, xtime (wall clock), and HPET timestamps.
+     *      seqlocks are read-heavy and write-rare: clock reads happen millions/sec.
+     *      Linux kernel: read_seqbegin / read_seqretry / write_seqlock / write_sequnlock
+     *
+     * WHY: Writer starvation in rwlock: if new readers keep arriving continuously,
+     *      a writer may wait indefinitely.  POSIX pthread_rwlock doesn't guarantee
+     *      writer preference.  Linux kernel's rw_semaphore uses a fair queue.
+     *      Some implementations (e.g., boost::shared_mutex) offer writer preference mode.
+     */
+    ps("Phase 4: seqlock Concept (Kernel Timekeeping)");
+    printf("  seqlock: optimistic concurrency for read-heavy, write-rare data.\n");
+    printf("  Sequence counter: odd=writer active, even=stable.\n\n");
+    {
+        /* Simulate seqlock pattern in userspace */
+        volatile unsigned seq = 0;
+        volatile long timestamp_sec = 1700000000L;
+        volatile long timestamp_nsec = 123456789L;
+
+        /* Simulate write */
+        seq++; /* seq becomes 1 (odd: updating) */
+        timestamp_sec = 1700000001L;
+        timestamp_nsec = 987654321L;
+        seq++; /* seq becomes 2 (even: stable) */
+
+        /* Simulate read with retry */
+        long ts_sec, ts_nsec;
+        unsigned s1, s2;
+        int retries = 0;
+        do {
+            s1 = seq;
+            if (s1 & 1) { retries++; continue; } /* writer active, retry */
+            ts_sec = timestamp_sec;
+            ts_nsec = timestamp_nsec;
+            s2 = seq;
+        } while (s1 != s2);
+
+        printf("  Read: ts=%ld.%ld (retries=%d)\n", ts_sec, ts_nsec, retries);
+        printf("  WHY: Kernel uses seqlock for jiffies/xtime (millions of reads/sec).\n");
+        printf("       No reader lock = zero contention between readers and writer.\n");
+    }
+
+    /* === EXERCISE ===
+     * Try these hands-on tasks:
+     * 1. Implement a read-write lock that favors writers (write-preferring):
+     *    Track waiting_writers count.  Readers block if waiting_writers > 0.
+     *    This prevents writer starvation at the cost of potentially starving readers.
+     *    Benchmark: compare reader throughput with reader-preferring vs writer-preferring.
+     * 2. Show reader concurrency: create 8 reader threads and 1 writer thread.
+     *    Add a printf inside the read-lock section showing concurrent reader count.
+     *    Verify that multiple readers can hold the lock simultaneously.
+     *    Then replace with a mutex: readers must serialize, showing the difference.
+     * 3. Modern (seqlock in kernel timekeeping): study the Linux kernel's
+     *    timekeeping_get_ns() function in kernel/time/timekeeping.c.
+     *    It uses read_seqbegin/read_seqretry to read xtime without locking.
+     *    Explain why this is faster than a mutex for clock_gettime() on every syscall.
+     *
+     * OBSERVE: RWlock readers can run in parallel as long as no writer is active.
+     *          With 4 readers and 1 writer, the rwlock should be ~4x faster than
+     *          a mutex for a read-heavy (90% read) workload.
+     * WHY:     seqlock is appropriate when data fits in a few words and readers
+     *          can afford to retry.  If the critical section is large (copying a
+     *          full struct), seqlock retries are expensive and rwlock is better.
+     */
+    printf("\n========== Hands-On Exercise ==========\n");
+    printf("1. Implement write-preferring rwlock; compare starvation behavior vs\n");
+    printf("   standard pthread_rwlock under continuous reader load.\n");
+    printf("2. Show reader concurrency: 8 readers simultaneously in rwlock;\n");
+    printf("   replace with mutex and show readers must serialize.\n");
+    printf("3. Modern (seqlock): study timekeeping_get_ns() in Linux kernel;\n");
+    printf("   explain why seqlock is preferred over mutex for clock reads.\n");
+
     printf("\n========== Quiz ==========\n");
     printf("Q1. When is a rwlock better than a mutex? When is it worse?\n");
     printf("Q2. What problem does trylock solve? Give a real-world example.\n");
     printf("Q3. Why are recursive mutexes considered a code smell?\n");
     printf("Q4. What is writer starvation in rwlocks and how can it be prevented?\n");
-    return 0;}
+    printf("Q5. Explain the seqlock algorithm: what does odd vs even sequence counter mean,\n");
+    printf("    and why must the reader loop retry when seq changes?\n");
+    printf("Q6. Why does the Linux kernel use seqlock for jiffies and xtime rather than\n");
+    printf("    a spinlock, given that clock_gettime() is called millions of times/sec?\n");
+    printf("Q7. What is the POSIX guarantee for pthread_rwlock_rdlock regarding\n");
+    printf("    writer starvation, and how does this differ from Linux kernel rw_semaphore?\n");
+    return 0;
+}

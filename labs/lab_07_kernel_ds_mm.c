@@ -84,17 +84,107 @@ static void demo_mm_struct(void) {
     printf("  VmStk   = stack size\n");
 }
 
+/* WHY: SLUB (Simple List of Unused Blocks) is the default slab allocator since
+ *      Linux 2.6.23, replacing the original SLAB.  Key differences:
+ *      - SLUB uses per-CPU slabs (no per-CPU caches like SLAB), reducing cache footprint.
+ *      - Objects are allocated from partial/full slabs using a single freelist pointer.
+ *      - SLUB has better memory utilization on NUMA systems (NUMA-aware allocation).
+ *      - SLUB debug mode (/sys/kernel/slab/<cache>/alloc_fastpath, etc.) provides
+ *        detailed allocation statistics.
+ *      In Linux 6.x, SLUB is the only maintained allocator (SLAB and SLOB removed in 6.2).
+ */
+
+static void demo_slub_stats(void) {
+    print_section("Phase 5: SLUB Allocator Statistics (Linux 6.x)");
+    printf("  SLUB is the default (and since 6.2: only) slab allocator in Linux.\n\n");
+
+    /* OBSERVE: /sys/kernel/slab/ has one directory per cache with detailed stats */
+    FILE *fp;
+    char path[256], val[64];
+
+    /* Check a well-known slab cache */
+    const char *caches[] = {"kmalloc-64", "kmalloc-128", "kmalloc-256", NULL};
+    for (int i = 0; caches[i]; i++) {
+        snprintf(path, sizeof(path), "/sys/kernel/slab/%s/object_size", caches[i]);
+        fp = fopen(path, "r");
+        if (!fp) continue;
+        if (fgets(val, sizeof(val), fp)) {
+            val[strcspn(val, "\n")] = '\0';
+            printf("  %-20s object_size=%s bytes\n", caches[i], val);
+        }
+        fclose(fp);
+
+        snprintf(path, sizeof(path), "/sys/kernel/slab/%s/slabs_cpu_partial", caches[i]);
+        fp = fopen(path, "r");
+        if (fp) {
+            if (fgets(val, sizeof(val), fp)) {
+                val[strcspn(val, "\n")] = '\0';
+                printf("  %-20s slabs_cpu_partial=%s\n", caches[i], val);
+            }
+            fclose(fp);
+        }
+    }
+
+    /* WHY: kmalloc-64 is used for small kernel allocations (e.g., file descriptors,
+     *      small network packet headers).  The kernel rounds up allocation sizes to
+     *      the next power-of-2 slab cache.  kmalloc(50) uses kmalloc-64. */
+    printf("\n  WHY: kernel kmalloc() rounds up to nearest cache (like a power-of-2 allocator).\n");
+    printf("  kmalloc(50) -> uses kmalloc-64 slab (wastes 14 bytes per object).\n");
+    printf("  Dedicated caches (task_struct, inode) avoid this waste for hot objects.\n");
+}
+
 int main(void) {
+    /* EXPECTED OUTPUT (Linux x86_64):
+     *   Phase 1: slabinfo shows task_struct, mm_struct, inode_cache, dentry entries
+     *            (requires root; otherwise prints "need root" message)
+     *   Phase 2: buddyinfo shows free blocks per order per NUMA node+zone
+     *   Phase 3: vmstat shows pgfault, pgmajfault, pswpin, pswpout counters
+     *   Phase 4: /proc/self/status Vm* fields (VmSize, VmRSS, VmData, VmStk, Threads)
+     *   Phase 5: SLUB object sizes from /sys/kernel/slab/ (Linux 6.x)
+     */
     printf("=== Lab 07: Kernel Data Structures, Memory Management ===\n");
     demo_slab_allocator();
     demo_buddy_allocator();
     demo_vmstat();
     demo_mm_struct();
+    demo_slub_stats();
+
+    /* === EXERCISE ===
+     * Try these hands-on tasks:
+     * 1. Read /proc/slabinfo (as root) and find the task_struct cache.
+     *    Record <active_objs> and <objsize>.  Compare objsize to
+     *    'grep task_struct /proc/slabinfo' vs 'pahole -C task_struct vmlinux'
+     *    (pahole requires kernel debug symbols).  Does the size match kernel source?
+     * 2. Measure buddy allocator fragmentation: parse /proc/buddyinfo and compute
+     *    the largest contiguous free block (highest order with count > 0) in each zone.
+     *    Then allocate a large buffer with mmap(MAP_HUGETLB) and re-check buddyinfo.
+     * 3. Modern (SLUB allocator in Linux 6.x): read /sys/kernel/slab/kmalloc-256/
+     *    directory.  List all files and read alloc_fastpath and alloc_slowpath.
+     *    These count how often SLUB serves from the per-CPU freelist (fast) vs
+     *    the global partial list (slow).  High slowpath ratio = CPU cache pressure.
+     *
+     * OBSERVE: The mm_struct is reference-counted (mm_count, mm_users fields in kernel).
+     *          Threads in the same process share mm_struct (same mm_users count).
+     *          Fork creates a new mm_struct (copy_mm) with COW page tables.
+     * WHY:     SLUB removed per-CPU caches from SLAB design, instead using a single
+     *          per-CPU 'active slab' pointer.  This reduces cache footprint from O(N_CPU
+     *          * N_caches) to O(N_caches), critical on 256+ core machines.
+     */
+    printf("\n========== Hands-On Exercise ==========\n");
+    printf("1. As root, read /proc/slabinfo; find task_struct size and active object count.\n");
+    printf("2. Parse /proc/buddyinfo; find largest contiguous free block per zone.\n");
+    printf("3. Modern (SLUB Linux 6.x): read /sys/kernel/slab/kmalloc-256/alloc_fastpath\n");
+    printf("   and alloc_slowpath to measure per-CPU vs global freelist utilization.\n");
+
     printf("\n========== Quiz ==========\n");
     printf("Q1. Why does the kernel use slab allocation instead of malloc?\n");
     printf("Q2. Explain the buddy allocator and how it handles fragmentation.\n");
     printf("Q3. What is an mm_struct and which processes share one?\n");
     printf("Q4. What do pgfault and pgmajfault counts in /proc/vmstat represent?\n");
     printf("Q5. How would you detect memory fragmentation on a production server?\n");
+    printf("Q6. How does SLUB differ from the original SLAB allocator, and why was SLAB\n");
+    printf("    removed from the Linux kernel in version 6.2?\n");
+    printf("Q7. What is the mm_count vs mm_users distinction in mm_struct, and which\n");
+    printf("    counter is decremented when a thread exits vs when a process exits?\n");
     return 0;
 }
