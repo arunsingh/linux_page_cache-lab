@@ -19,7 +19,10 @@
  *   ./page_cache_models testdata.bin threads 1 4 2
  *   ./page_cache_models testdata.bin processes 4 1 2
  *   ./page_cache_models testdata.bin hybrid 2 2 2
- */
+ *
+ * Author: Arun Singh | arunsingh.in@gmail.com
+ * OS Fundamental Labs based on Prof. Sorav Bansal, NPTEL, IIT Delhi lecture series
+*/
 
 #define _GNU_SOURCE
 #include <errno.h>

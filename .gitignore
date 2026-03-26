@@ -1,5 +1,18 @@
-.DS_Store
+# Build artifacts
 bin/
 *.out
 *.o
+
+# macOS
+.DS_Store
+.DS_Store?
+._*
+
+# Logs and test data
 *.log
+testdata.bin
+
+# Archives (kept locally for reference, not needed in repo)
+*.tar.gz
+*.tar
+*.zip

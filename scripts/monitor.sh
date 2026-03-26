@@ -1,5 +1,8 @@
 #!/bin/bash
 #
+# Author: Arun Singh | arunsingh.in@gmail.com
+# OS Fundamental Labs based on Prof. Sorav Bansal, NPTEL, IIT Delhi lecture series
+#
 # monitor.sh  [PID]
 #
 # Print the virtual and physical memory usage of the demand_paging process every second.

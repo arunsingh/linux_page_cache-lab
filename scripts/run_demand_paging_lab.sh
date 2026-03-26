@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+#
+# Author: Arun Singh | arunsingh.in@gmail.com
+# OS Fundamental Labs based on Prof. Sorav Bansal, NPTEL, IIT Delhi lecture series
 set -euo pipefail
 cd "$(dirname "$0")/.."
 if [[ ! -x bin/demand_paging ]]; then

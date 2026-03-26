@@ -16,7 +16,10 @@
  *
  * Build:
  *   gcc -O0 -Wall -pthread -o demand_paging demand_paging.c
- */
+ *
+ * Author: Arun Singh | arunsingh.in@gmail.com
+ * OS Fundamental Labs based on Prof. Sorav Bansal, NPTEL, IIT Delhi lecture series
+*/
 
 #include <errno.h>
 #include <stdint.h>
