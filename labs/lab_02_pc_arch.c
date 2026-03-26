@@ -113,7 +113,7 @@ static void demo_cache_hierarchy(void) {
     for (int i = 0; i < 8; i++) {
         snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu0/cache/index%d/type", i);
         if (read_sysfs_str(path, buf, sizeof(buf)) != 0) break;
-        char type[32]; strncpy(type, buf, sizeof(type));
+        char type[32]; strncpy(type, buf, sizeof(type) - 1); type[sizeof(type)-1] = '\0';
 
         snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu0/cache/index%d/level", i);
         long level = read_sysfs_long(path);

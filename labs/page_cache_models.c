@@ -173,10 +173,12 @@ int main(int argc, char **argv)
 
     const char *path = argv[1];
     const char *mode = argv[2];
-    int proc_count = atoi(argv[3]);
-    int thread_count = atoi(argv[4]);
-    int rounds = atoi(argv[5]);
-    if (proc_count <= 0 || thread_count <= 0 || rounds <= 0) {
+    int proc_count = (int)strtol(argv[3], NULL, 10);
+    int thread_count = (int)strtol(argv[4], NULL, 10);
+    int rounds = (int)strtol(argv[5], NULL, 10);
+    if (proc_count <= 0 || proc_count > 1024 ||
+        thread_count <= 0 || thread_count > 1024 ||
+        rounds <= 0) {
         usage(argv[0]);
         return 1;
     }

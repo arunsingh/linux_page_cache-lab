@@ -24,7 +24,7 @@ int main(void){
             printf("  Child %d: PID=%d PPID=%d\n",i,getpid(),getppid());
             if(i==2){
                 printf("  Child 2: exec(ls)...\n");
-                execlp("ls","ls","-la","/proc/self",NULL);
+                execl("/bin/ls","ls","-la","/proc/self",NULL);
                 perror("exec");
             }
             _exit(i);
