@@ -22,6 +22,8 @@
 #   vagrant destroy -f  # nuclear reset
 
 Vagrant.configure("2") do |config|
+  config.ssh.insert_key = false
+  config.ssh.private_key_path = "~/.vagrant.d/insecure_private_key"
 
   # ---------------------------------------------------------------------------
   # Box
@@ -35,7 +37,6 @@ Vagrant.configure("2") do |config|
   # ---------------------------------------------------------------------------
   # SSH
   # ---------------------------------------------------------------------------
-  config.ssh.insert_key = true
 
   # ---------------------------------------------------------------------------
   # Network
